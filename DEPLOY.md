@@ -332,10 +332,38 @@ OIDC 过滤器会自动在 Ranger 的 `login.jsp` 页面中注入 "Login with {p
 
 ## 与 Ranger 内部集成机制
 
-- **审计日志**：过滤器设置 `request.ssoEnabled=true`，触发 `AUTH_TYPE_SSO`（值为 3）审计类型
-- **用户自动创建**：通过 `ssoEnabled=true` 标记，`SessionMgr.getSSOSpnegoAuthCheckForAPI()` 自动调用 `XUserMgr.createServiceConfigUser()`
-- **角色映射**：使用反射调用 `UserMgr.getRolesByLoginId()` 从 Ranger 数据库获取角色；`admin-groups` 中配置的 OIDC 组成员直接获得 `ROLE_SYS_ADMIN`
-- **会话管理**：认证信息存储在 `HttpSession` 的 `SPRING_SECURITY_CONTEXT` key 下，与 Spring Security 的 `SecurityContextPersistenceFilter` 无缝集成
+### 会话管理（SessionMgr 集成）
+
+OIDC 登录成功后，不需要手动调用 `SessionMgr`。Ranger 已有的 `RangerSecurityContextFormationFilter`（在 Spring Security filter chain 的 LAST 位置）自动处理：
+
+1. OIDC filter 设置 `SecurityContext` + request attributes
+2. 请求进入 Spring Security → `SecurityContextPersistenceFilter` 加载认证信息
+3. `RangerSecurityContextFormationFilter` 检测到已认证用户
+4. 调用 `sessionMgr.processSuccessLogin(AUTH_TYPE_SSO, ...)` 创建 `UserSessionBase` 和 `XXAuthSession` 审计记录
+5. `RangerSecurityContext` 存入 session → 后续请求直接读取
+
+**关键 request attributes：**
+
+| Attribute | 值 | 作用 |
+|-----------|------|------|
+| `ssoEnabled` | `true` | 触发 `AUTH_TYPE_SSO` 审计类型 + `userSession.setSSOEnabled(true)` |
+| `spnegoEnabled` | `true` | 触发 `SessionMgr.getSSOSpnegoAuthCheckForAPI()` 中的用户自动创建 |
+
+> `spnegoEnabled` 是必需的兼容方案：`SessionMgr` 在首次登录时，`UserSessionBase` 尚未创建，无法通过 `session.isSSOEnabled()` 判断。`getSSOSpnegoAuthCheckForAPI()` 在检查时只会读取 `request.getAttribute("spnegoEnabled")` 或 `PropertiesUtil.getBooleanProperty("ranger.sso.enabled")`。我们无法修改 Ranger 源码，因此同时设置两个 attribute 确保自动创建用户正常工作。
+
+### CSRF 防护
+
+- **State 参数存在 HTTP Session 中**（不是 Cookie），防止 CSRF 攻击
+- 攻击者无法读取受害者 Session 中的 state，回调请求的 CSRF 伪造会失败
+- State 在回调时立即从 Session 中移除（一次性使用）
+- Nonce 同样从 Session 中读取并比对 ID Token
+
+### 审计日志与在线用户
+
+- 审计类型：`AUTH_TYPE_SSO`（值为 3）
+- 登录成功写入 `x_auth_sess` 表
+- 在线用户列表正常工作（通过 `RangerHttpSessionListener` 追踪）
+- Session 超时由 Ranger 的 `session-timeout` 配置控制
 
 ## 验证
 

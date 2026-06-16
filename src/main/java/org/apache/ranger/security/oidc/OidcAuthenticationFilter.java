@@ -81,8 +81,8 @@ public class OidcAuthenticationFilter implements Filter {
     private static final Logger LOG = LoggerFactory.getLogger(OidcAuthenticationFilter.class);
 
     public static final String OIDC_SESSION_ATTR = "oidc_authenticated";
-    public static final String OIDC_STATE_COOKIE = "ranger_oidc_state";
-    public static final String OIDC_NONCE_COOKIE = "ranger_oidc_nonce";
+    public static final String OIDC_STATE_ATTR = "oidc_state";
+    public static final String OIDC_NONCE_ATTR = "oidc_nonce";
 
     /** HTTP status code used by Ranger for authentication timeout (419). */
     private static final int SC_AUTHENTICATION_TIMEOUT = 419;
@@ -331,8 +331,12 @@ public class OidcAuthenticationFilter implements Filter {
             // Set for current thread
             SecurityContextHolder.getContext().setAuthentication(authToken);
 
-            // Signal Ranger's SecurityContextFormationFilter to use AUTH_TYPE_SSO
+            // Signal Ranger's SecurityContextFormationFilter to use AUTH_TYPE_SSO (audit trail).
+            // Also set spnegoEnabled to trigger user auto-creation in SessionMgr.getSSOSpnegoAuthCheckForAPI().
+            // Ranger's SessionMgr checks both spnegoEnabled and ssoEnabled request attributes for
+            // auto-provisioning; setting both ensures OIDC users are auto-created on first login.
             httpRequest.setAttribute("ssoEnabled", true);
+            httpRequest.setAttribute("spnegoEnabled", true);
 
             LOG.info("OIDC authentication successful: username={}, groups={}", username, groups);
             return true;
@@ -475,20 +479,20 @@ public class OidcAuthenticationFilter implements Filter {
         String state = UUID.randomUUID().toString();
         String nonce = UUID.randomUUID().toString();
 
-        // Store state and nonce in cookies for callback validation
-        Cookie stateCookie = new Cookie(OIDC_STATE_COOKIE, state);
-        stateCookie.setHttpOnly(true);
-        stateCookie.setSecure(request.isSecure());
-        stateCookie.setPath("/");
-        stateCookie.setMaxAge(600);
-        response.addCookie(stateCookie);
+        // Store state and nonce in HTTP Session (NOT cookie) for CSRF protection.
+        // Storing in session ensures only the same browser session that initiated
+        // the auth flow can complete it. Cookies would be sent automatically by
+        // the browser on CSRF attacks, defeating the purpose of the state parameter.
+        HttpSession session = request.getSession(true);
+        session.setAttribute(OIDC_STATE_ATTR, state);
+        session.setAttribute(OIDC_NONCE_ATTR, nonce);
 
-        Cookie nonceCookie = new Cookie(OIDC_NONCE_COOKIE, nonce);
-        nonceCookie.setHttpOnly(true);
-        nonceCookie.setSecure(request.isSecure());
-        nonceCookie.setPath("/");
-        nonceCookie.setMaxAge(600);
-        response.addCookie(nonceCookie);
+        // Save original URL for post-login redirect
+        String originalUrl = request.getRequestURI();
+        if (request.getQueryString() != null) {
+            originalUrl += "?" + request.getQueryString();
+        }
+        session.setAttribute("oidc_original_url", originalUrl);
 
         // Build authorization URL
         StringBuilder authUrl = new StringBuilder(authEndpoint);
@@ -500,14 +504,6 @@ public class OidcAuthenticationFilter implements Filter {
         authUrl.append("&nonce=").append(URLEncoder.encode(nonce, "UTF-8"));
 
         LOG.info("Redirecting to OIDC provider: {}", authEndpoint);
-
-        // Save original URL for post-login redirect
-        HttpSession session = request.getSession(true);
-        String originalUrl = request.getRequestURI();
-        if (request.getQueryString() != null) {
-            originalUrl += "?" + request.getQueryString();
-        }
-        session.setAttribute("oidc_original_url", originalUrl);
 
         response.sendRedirect(authUrl.toString());
     }
@@ -541,10 +537,26 @@ public class OidcAuthenticationFilter implements Filter {
             return;
         }
 
-        // Validate state parameter
-        String stateFromCookie = getCookieValue(request, OIDC_STATE_COOKIE);
-        if (stateFromCookie == null || !stateFromCookie.equals(state)) {
-            LOG.warn("OIDC state mismatch: expected={}, got={}", stateFromCookie, state);
+        // CSRF protection: validate state parameter against session-stored value.
+        // State is stored in HTTP Session (not cookie) to prevent CSRF attacks.
+        // An attacker cannot access the victim's session state, so a forged
+        // callback request will fail this check.
+        HttpSession session = request.getSession(false);
+        if (session == null) {
+            LOG.warn("OIDC callback has no session");
+            response.sendRedirect(request.getContextPath() + "/login.jsp?error=oidc");
+            return;
+        }
+
+        String expectedState = (String) session.getAttribute(OIDC_STATE_ATTR);
+        String expectedNonce = (String) session.getAttribute(OIDC_NONCE_ATTR);
+
+        // Remove state/nonce from session immediately (one-time use)
+        session.removeAttribute(OIDC_STATE_ATTR);
+        session.removeAttribute(OIDC_NONCE_ATTR);
+
+        if (expectedState == null || !expectedState.equals(state)) {
+            LOG.warn("OIDC state mismatch: expected={}, got={}", expectedState, state);
             response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Invalid state parameter");
             return;
         }
@@ -559,8 +571,16 @@ public class OidcAuthenticationFilter implements Filter {
                 return;
             }
 
-            // Validate the ID token
+            // Validate the ID token (includes nonce check implicitly via JWT claims)
             JWTClaimsSet claims = tokenValidator.validateToken(tokenResponse.idToken);
+
+            // Verify nonce in ID token matches the one we sent (replay protection)
+            String tokenNonce = tokenValidator.extractClaim(claims, "nonce");
+            if (expectedNonce != null && !expectedNonce.equals(tokenNonce)) {
+                LOG.warn("OIDC nonce mismatch: expected={}, got={}", expectedNonce, tokenNonce);
+                response.sendRedirect(request.getContextPath() + "/login.jsp?error=oidc_validation");
+                return;
+            }
 
             // Store ID token as session cookie for subsequent requests
             Cookie oidcCookie = new Cookie(config.getCookieName(), tokenResponse.idToken);
@@ -572,19 +592,12 @@ public class OidcAuthenticationFilter implements Filter {
 
             // Authenticate
             if (authenticateWithToken(request, response, tokenResponse.idToken)) {
-                // Clear state/nonce
-                clearCookie(response, OIDC_STATE_COOKIE);
-                clearCookie(response, OIDC_NONCE_COOKIE);
-
                 // Redirect to original URL or home
-                HttpSession session = request.getSession(false);
                 String redirectUrl = request.getContextPath() + "/";
-                if (session != null) {
-                    String originalUrl = (String) session.getAttribute("oidc_original_url");
-                    if (originalUrl != null) {
-                        redirectUrl = originalUrl;
-                        session.removeAttribute("oidc_original_url");
-                    }
+                String originalUrl = (String) session.getAttribute("oidc_original_url");
+                if (originalUrl != null) {
+                    redirectUrl = originalUrl;
+                    session.removeAttribute("oidc_original_url");
                 }
 
                 LOG.info("OIDC callback processed, redirecting to: {}", redirectUrl);
@@ -683,29 +696,6 @@ public class OidcAuthenticationFilter implements Filter {
             return null;
         }
         return json.substring(valueStart, valueEnd);
-    }
-
-    // --- Cookie Helpers ---
-
-    private String getCookieValue(HttpServletRequest request, String name) {
-        Cookie[] cookies = request.getCookies();
-        if (cookies == null) {
-            return null;
-        }
-        for (Cookie cookie : cookies) {
-            if (name.equals(cookie.getName())) {
-                return cookie.getValue();
-            }
-        }
-        return null;
-    }
-
-    private void clearCookie(HttpServletResponse response, String name) {
-        Cookie cookie = new Cookie(name, "");
-        cookie.setHttpOnly(true);
-        cookie.setPath("/");
-        cookie.setMaxAge(0);
-        response.addCookie(cookie);
     }
 
     @Override

@@ -184,6 +184,7 @@ public class OidcAuthenticationFilterTest {
         assertNotNull(request.getSession().getAttribute(OidcAuthenticationFilter.OIDC_SESSION_ATTR));
         assertEquals(Boolean.TRUE, request.getSession().getAttribute(OidcAuthenticationFilter.OIDC_SESSION_ATTR));
         assertEquals(true, request.getAttribute("ssoEnabled"));
+        assertEquals(true, request.getAttribute("spnegoEnabled")); // triggers SessionMgr auto-creation
     }
 
     @Test
@@ -300,7 +301,7 @@ public class OidcAuthenticationFilterTest {
     }
 
     @Test
-    public void testBrowserRedirectSetsStateAndNonceCookies() throws Exception {
+    public void testBrowserRedirectStoresStateAndNonceInSession() throws Exception {
         System.setProperty(OidcConfiguration.OIDC_AUTH_ENDPOINT, "https://idp.example.com/auth");
         config = new OidcConfiguration();
         filter = new OidcAuthenticationFilter(config, tokenValidator, authProvider);
@@ -312,20 +313,9 @@ public class OidcAuthenticationFilterTest {
 
         filter.doFilter(request, response, mockChain);
 
-        boolean hasStateCookie = false;
-        boolean hasNonceCookie = false;
-        for (Cookie cookie : response.getCookies()) {
-            if (OidcAuthenticationFilter.OIDC_STATE_COOKIE.equals(cookie.getName())) {
-                hasStateCookie = true;
-                assertTrue("State cookie should be HTTP-only", cookie.isHttpOnly());
-                assertEquals(600, cookie.getMaxAge());
-            }
-            if (OidcAuthenticationFilter.OIDC_NONCE_COOKIE.equals(cookie.getName())) {
-                hasNonceCookie = true;
-            }
-        }
-        assertTrue("State cookie not set", hasStateCookie);
-        assertTrue("Nonce cookie not set", hasNonceCookie);
+        // State and nonce should be stored in HTTP Session (not cookies) for CSRF protection
+        assertNotNull("State should be stored in session", request.getSession().getAttribute("oidc_state"));
+        assertNotNull("Nonce should be stored in session", request.getSession().getAttribute("oidc_nonce"));
     }
 
     @Test
@@ -446,12 +436,29 @@ public class OidcAuthenticationFilterTest {
         request.setRequestURI("/login/oidc/callback");
         request.setParameter("code", "authcode123");
         request.setParameter("state", "wrong-state");
-        request.setCookies(new Cookie(OidcAuthenticationFilter.OIDC_STATE_COOKIE, "expected-state"));
+        // State stored in session by redirectToOidcProvider
+        request.getSession().setAttribute("oidc_state", "expected-state");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, mockChain);
 
         assertEquals(400, response.getStatus());
+    }
+
+    @Test
+    public void testCallbackWithNoSessionRedirects() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/login/oidc/callback");
+        request.setParameter("code", "authcode123");
+        request.setParameter("state", "any-state");
+        // No session created → should redirect to login
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, mockChain);
+
+        String location = response.getHeader("Location");
+        assertNotNull(location);
+        assertTrue(location.contains("error=oidc"));
     }
 
     // --- Admin Group Resolution Tests ---
@@ -594,7 +601,6 @@ public class OidcAuthenticationFilterTest {
 
     @Test
     public void testCallbackWithoutTokenEndpointSends500() throws Exception {
-        // Ensure token endpoint is empty
         System.setProperty(OidcConfiguration.OIDC_TOKEN_ENDPOINT, "");
         System.setProperty(OidcConfiguration.OIDC_ISSUER_URI, "");
         config = new OidcConfiguration();
@@ -604,12 +610,13 @@ public class OidcAuthenticationFilterTest {
         request.setRequestURI("/login/oidc/callback");
         request.setParameter("code", "authcode123");
         request.setParameter("state", "expected-state");
-        request.setCookies(new Cookie(OidcAuthenticationFilter.OIDC_STATE_COOKIE, "expected-state"));
+        request.getSession().setAttribute("oidc_state", "expected-state");
+        request.getSession().setAttribute("oidc_nonce", "test-nonce");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, mockChain);
 
-        // Should redirect to login.jsp with error since token exchange will fail
+        // Token endpoint will be empty → exchange fails → redirects to login with error
         String location = response.getHeader("Location");
         assertNotNull(location);
         assertTrue(location.contains("error=oidc"));
@@ -625,12 +632,13 @@ public class OidcAuthenticationFilterTest {
         request.setRequestURI("/login/oidc/callback");
         request.setParameter("code", "authcode123");
         request.setParameter("state", "match-me");
-        request.setCookies(new Cookie(OidcAuthenticationFilter.OIDC_STATE_COOKIE, "match-me"));
+        request.getSession().setAttribute("oidc_state", "match-me");
+        request.getSession().setAttribute("oidc_nonce", "test-nonce");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, mockChain);
 
-        // Token endpoint will fail, redirects to login with error
+        // Token endpoint unreachable → exchange fails → redirects to login with error
         String location = response.getHeader("Location");
         assertNotNull(location);
         assertTrue(location.contains("error=oidc"));
