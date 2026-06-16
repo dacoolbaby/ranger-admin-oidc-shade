@@ -1,0 +1,684 @@
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!--
+  Ranger Admin Site Configuration Template
+  ==========================================
+  Based on: apache/ranger:2.8.0 Docker image
+  Enhanced with: OIDC authentication support (ranger-admin-oidc-shade)
+
+  Usage:
+    1. Copy this file to <RANGER_HOME>/ews/webapp/WEB-INF/classes/conf.dist/ranger-admin-site.xml
+    2. Replace all placeholder values (marked with <...>)
+    3. See DEPLOY.md for full OIDC configuration guide
+-->
+
+<configuration>
+
+  <!-- ============================================================= -->
+  <!-- Database Configuration                                        -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.jpa.jdbc.driver</name>
+    <value>net.sf.log4jdbc.DriverSpy</value>
+  </property>
+  <property>
+    <name>ranger.jpa.jdbc.url</name>
+    <value>jdbc:log4jdbc:mysql://<DB_HOST>:3306/ranger</value>
+  </property>
+  <property>
+    <name>ranger.jpa.jdbc.user</name>
+    <value>rangeradmin</value>
+  </property>
+  <property>
+    <name>ranger.jpa.jdbc.password</name>
+    <value><DB_PASSWORD></value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Ranger Admin Server                                           -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.externalurl</name>
+    <value>https://<RANGER_HOST>:6182</value>
+  </property>
+  <property>
+    <name>ranger.service.host</name>
+    <value><RANGER_HOST></value>
+  </property>
+  <property>
+    <name>ranger.service.http.port</name>
+    <value>6080</value>
+  </property>
+  <property>
+    <name>ranger.service.https.port</name>
+    <value>6182</value>
+  </property>
+  <property>
+    <name>ranger.service.https.attrib.ssl.enabled</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>ranger.service.https.attrib.keystore.file</name>
+    <value>/etc/ranger/admin/keys/server.jks</value>
+  </property>
+  <property>
+    <name>ranger.service.https.attrib.keystore.keyalias</name>
+    <value>myKey</value>
+  </property>
+  <property>
+    <name>ranger.service.https.attrib.keystore.pass</name>
+    <value>_</value>
+  </property>
+  <property>
+    <name>ranger.service.http.enabled</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.admin.cookie.name</name>
+    <value>RANGERADMINSESSIONID</value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Authentication Method                                          -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.authentication.method</name>
+    <value>NONE</value>
+    <!-- Options: NONE, LDAP, ACTIVE_DIRECTORY, UNIX, PAM -->
+    <!-- OIDC authentication is handled by ranger-admin-oidc-shade module -->
+  </property>
+  <property>
+    <name>ranger.scheduler.enabled</name>
+    <value>true</value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- LDAP Configuration (when not using OIDC)                       -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.ldap.url</name>
+    <value>ldap://</value>
+  </property>
+  <property>
+    <name>ranger.ldap.user.dnpattern</name>
+    <value>uid={0},ou=users,dc=xasecure,dc=net</value>
+  </property>
+  <property>
+    <name>ranger.ldap.group.searchbase</name>
+    <value>ou=groups,dc=xasecure,dc=net</value>
+  </property>
+  <property>
+    <name>ranger.ldap.group.searchfilter</name>
+    <value>(member=uid={0},ou=users,dc=xasecure,dc=net)</value>
+  </property>
+  <property>
+    <name>ranger.ldap.group.roleattribute</name>
+    <value>cn</value>
+  </property>
+  <property>
+    <name>ranger.ldap.base.dn</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.bind.dn</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.bind.password</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.default.role</name>
+    <value>ROLE_USER</value>
+  </property>
+  <property>
+    <name>ranger.ldap.referral</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.user.searchfilter</name>
+    <value>(uid={0})</value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.domain</name>
+    <value>example.com</value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.url</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.base.dn</name>
+    <value>dc=example,dc=com</value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.bind.dn</name>
+    <value>cn=administrator,ou=users,dc=example,dc=com</value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.bind.password</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.referral</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.ldap.ad.user.searchfilter</name>
+    <value>(sAMAccountName={0})</value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Audit Configuration                                            -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.audit.source.type</name>
+    <value>db</value>
+    <!-- Options: db, solr, elasticsearch, amazon_cloudwatch -->
+  </property>
+  <property>
+    <name>ranger.audit.solr.urls</name>
+    <value>http://##solr_host##:6083/solr/ranger_audits</value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.zookeepers</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.collection.name</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.config.name</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.configset.location</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.no.shards</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.max.shards.per.node</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.no.replica</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.acl.user.list.sasl</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.bootstrap.enabled</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.solr.max.retry</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.solr.audit.user</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.solr.audit.user.password</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.urls</name>
+    <value>127.0.0.1</value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.protocol</name>
+    <value>http</value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.port</name>
+    <value>9200</value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.user</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.password</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.index</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.elasticsearch.bootstrap.enabled</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.audit.amazon_cloudwatch.region</name>
+    <value>us-east-2</value>
+  </property>
+  <property>
+    <name>ranger.audit.amazon_cloudwatch.log_group</name>
+    <value>ranger_audits</value>
+  </property>
+  <property>
+    <name>ranger.audit.amazon_cloudwatch.log_stream_prefix</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.audit.hive.query.visibility</name>
+    <value>true</value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Knox SSO Configuration (disabled when using OIDC)              -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.sso.enabled</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>ranger.sso.providerurl</name>
+    <value>https://127.0.0.1:8443/gateway/knoxsso/api/v1/websso</value>
+  </property>
+  <property>
+    <name>ranger.sso.publicKey</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.sso.browser.useragent</name>
+    <value>Mozilla,chrome</value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Kerberos Configuration                                         -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.admin.kerberos.token.valid.seconds</name>
+    <value>30</value>
+  </property>
+  <property>
+    <name>ranger.admin.kerberos.cookie.domain</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.admin.kerberos.cookie.path</name>
+    <value>/</value>
+  </property>
+  <property>
+    <name>ranger.admin.kerberos.principal</name>
+    <value>rangeradmin/_HOST@REALM</value>
+  </property>
+  <property>
+    <name>ranger.admin.kerberos.keytab</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.spnego.kerberos.principal</name>
+    <value>HTTP/_HOST@REALM</value>
+  </property>
+  <property>
+    <name>ranger.spnego.kerberos.keytab</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.lookup.kerberos.principal</name>
+    <value>rangerlookup/_HOST@REALM</value>
+  </property>
+  <property>
+    <name>ranger.lookup.kerberos.keytab</name>
+    <value></value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- Misc Configuration                                             -->
+  <!-- ============================================================= -->
+  <property>
+    <name>ranger.supportedcomponents</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.downloadpolicy.session.log.enabled</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>ranger.service.https.attrib.keystore.credential.alias</name>
+    <value>keyStoreCredentialAlias</value>
+  </property>
+  <property>
+    <name>ranger.tomcat.ciphers</name>
+    <value></value>
+  </property>
+  <property>
+    <name>ranger.admin.init.purge.login_records</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>ranger.admin.init.purge.login_records.retention.days</name>
+    <value>0</value>
+  </property>
+  <property>
+    <name>ranger.admin.init.purge.transaction_records</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>ranger.admin.init.purge.transaction_records.retention.days</name>
+    <value>0</value>
+  </property>
+
+  <!-- Service user for KMS -->
+  <property>
+    <name>ranger.kms.service.user.hdfs</name>
+    <value>hdfs</value>
+  </property>
+  <property>
+    <name>ranger.kms.service.user.hive</name>
+    <value>hive</value>
+  </property>
+  <property>
+    <name>ranger.kms.service.user.hbase</name>
+    <value>hbase</value>
+  </property>
+  <property>
+    <name>ranger.kms.service.user.om</name>
+    <value>om</value>
+  </property>
+
+  <!-- Audit JAAS -->
+  <property>
+    <name>xasecure.audit.jaas.Client.loginModuleName</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.loginModuleControlFlag</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.useKeyTab</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.storeKey</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.useTicketCache</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.serviceName</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.keyTab</name>
+    <value></value>
+  </property>
+  <property>
+    <name>xasecure.audit.jaas.Client.option.principal</name>
+    <value></value>
+  </property>
+
+  <!-- ============================================================= -->
+  <!-- OIDC Authentication (ranger-admin-oidc-shade)                  -->
+  --=============================================================== -->
+  <!--
+    These properties are consumed by the ranger-admin-oidc-shade module.
+    Requires: ranger-admin-oidc-shade-2.8.0.jar in WEB-INF/lib/
+
+    For MS Entra ID (Azure AD), see the example values below.
+    For Keycloak or other OIDC providers, update the endpoints accordingly.
+  -->
+
+  <!-- Master switch: set to true to enable OIDC login -->
+  <property>
+    <name>ranger.oidc.enabled</name>
+    <value>true</value>
+  </property>
+
+  <!-- = = = = = MS Entra ID (Azure AD) Example = = = = = -->
+
+  <!-- Tenant-specific issuer. Replace {tenant-id} with your Entra tenant ID.
+       e.g. https://login.microsoftonline.com/12345678-1234-1234-1234-123456789abc/v2.0 -->
+  <property>
+    <name>ranger.oidc.issuer-uri</name>
+    <value>https://login.microsoftonline.com/<YOUR_TENANT_ID>/v2.0</value>
+  </property>
+
+  <!-- Client ID from Entra App Registration -->
+  <property>
+    <name>ranger.oidc.client-id</name>
+    <value><YOUR_ENTRA_APP_CLIENT_ID></value>
+  </property>
+
+  <!-- Client Secret from Entra App Registration > Certificates & secrets -->
+  <property>
+    <name>ranger.oidc.client-secret</name>
+    <value><YOUR_ENTRA_APP_CLIENT_SECRET></value>
+  </property>
+
+  <!-- JWKS endpoint for token signature verification -->
+  <property>
+    <name>ranger.oidc.jwks-uri</name>
+    <value>https://login.microsoftonline.com/<YOUR_TENANT_ID>/discovery/v2.0/keys</value>
+  </property>
+
+  <!-- Authorization endpoint (Entra ID v2.0) -->
+  <property>
+    <name>ranger.oidc.auth-endpoint</name>
+    <value>https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/authorize</value>
+  </property>
+
+  <!-- Token endpoint (Entra ID v2.0) -->
+  <property>
+    <name>ranger.oidc.token-endpoint</name>
+    <value>https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/token</value>
+  </property>
+
+  <!-- Callback URL: must match the redirect URI configured in Entra App Registration.
+       Must use HTTPS (Entra ID requirement). The Ranger Admin host and port. -->
+  <property>
+    <name>ranger.oidc.redirect-uri</name>
+    <value>https://<RANGER_HOST>:6182/login/oidc/callback</value>
+  </property>
+
+  <!-- Scopes to request from Entra ID -->
+  <property>
+    <name>ranger.oidc.scope</name>
+    <value>openid profile email</value>
+  </property>
+
+  <!-- JWT claim used as the Ranger login ID.
+       Entra ID: "preferred_username" (user@domain.com) or "upn" -->
+  <property>
+    <name>ranger.oidc.username-claim</name>
+    <value>preferred_username</value>
+  </property>
+
+  <!-- JWT claim for email -->
+  <property>
+    <name>ranger.oidc.email-claim</name>
+    <value>email</value>
+  </property>
+
+  <!-- JWT claim for group membership.
+       Entra ID: "groups" returns group Object IDs by default.
+       To get group names, configure "sAMAccountName" in Entra token config.
+       Or use "roles" if you've configured App Roles in Entra. -->
+  <property>
+    <name>ranger.oidc.groups-claim</name>
+    <value>groups</value>
+  </property>
+
+  <!-- OIDC groups that should get ROLE_SYS_ADMIN in Ranger.
+       For Entra ID: use group Object IDs or group names (depending on groups-claim setting).
+       Comma-separated, no spaces.
+       Example with Object IDs: 12345678-1234-1234-1234-123456789abc,87654321-4321-4321-4321-cba987654321 -->
+  <property>
+    <name>ranger.oidc.admin-groups</name>
+    <value><YOUR_RANGER_ADMIN_GROUP_ID></value>
+  </property>
+
+  <!-- = = = = = Keycloak Example (commented out) = = = = = -->
+  <!--
+  <property>
+    <name>ranger.oidc.enabled</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.oidc.issuer-uri</name>
+    <value>https://<KEYCLOAK_HOST>/realms/<REALM_NAME></value>
+  </property>
+  <property>
+    <name>ranger.oidc.client-id</name>
+    <value>ranger-admin</value>
+  </property>
+  <property>
+    <name>ranger.oidc.client-secret</name>
+    <value><KEYCLOAK_CLIENT_SECRET></value>
+  </property>
+  <property>
+    <name>ranger.oidc.jwks-uri</name>
+    <value>https://<KEYCLOAK_HOST>/realms/<REALM_NAME>/protocol/openid-connect/certs</value>
+  </property>
+  <property>
+    <name>ranger.oidc.auth-endpoint</name>
+    <value>https://<KEYCLOAK_HOST>/realms/<REALM_NAME>/protocol/openid-connect/auth</value>
+  </property>
+  <property>
+    <name>ranger.oidc.token-endpoint</name>
+    <value>https://<KEYCLOAK_HOST>/realms/<REALM_NAME>/protocol/openid-connect/token</value>
+  </property>
+  <property>
+    <name>ranger.oidc.redirect-uri</name>
+    <value>https://<RANGER_HOST>:6182/login/oidc/callback</value>
+  </property>
+  <property>
+    <name>ranger.oidc.username-claim</name>
+    <value>preferred_username</value>
+  </property>
+  <property>
+    <name>ranger.oidc.groups-claim</name>
+    <value>groups</value>
+  </property>
+  <property>
+    <name>ranger.oidc.admin-groups</name>
+    <value>ranger-admins</value>
+  </property>
+  <property>
+    <name>ranger.oidc.provider-name</name>
+    <value>Keycloak SSO</value>
+  </property>
+  -->
+
+  <!-- = = = = = Okta Example (commented out) = = = = = -->
+  <!--
+  <property>
+    <name>ranger.oidc.enabled</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>ranger.oidc.issuer-uri</name>
+    <value>https://<OKTA_DOMAIN>.okta.com</value>
+  </property>
+  <property>
+    <name>ranger.oidc.client-id</name>
+    <value><OKTA_CLIENT_ID></value>
+  </property>
+  <property>
+    <name>ranger.oidc.client-secret</name>
+    <value><OKTA_CLIENT_SECRET></value>
+  </property>
+  <property>
+    <name>ranger.oidc.jwks-uri</name>
+    <value>https://<OKTA_DOMAIN>.okta.com/oauth2/v1/keys</value>
+  </property>
+  <property>
+    <name>ranger.oidc.auth-endpoint</name>
+    <value>https://<OKTA_DOMAIN>.okta.com/oauth2/v1/authorize</value>
+  </property>
+  <property>
+    <name>ranger.oidc.token-endpoint</name>
+    <value>https://<OKTA_DOMAIN>.okta.com/oauth2/v1/token</value>
+  </property>
+  <property>
+    <name>ranger.oidc.redirect-uri</name>
+    <value>https://<RANGER_HOST>:6182/login/oidc/callback</value>
+  </property>
+  <property>
+    <name>ranger.oidc.username-claim</name>
+    <value>preferred_username</value>
+  </property>
+  <property>
+    <name>ranger.oidc.groups-claim</name>
+    <value>groups</value>
+  </property>
+  <property>
+    <name>ranger.oidc.admin-groups</name>
+    <value>ranger-admins</value>
+  </property>
+  <property>
+    <name>ranger.oidc.provider-name</name>
+    <value>Okta</value>
+  </property>
+  -->
+
+  <!-- ============================================================= -->
+  <!-- OIDC Common Settings                                           -->
+  --=============================================================== -->
+
+  <!-- Display name on the login.jsp "Login with ..." button -->
+  <property>
+    <name>ranger.oidc.provider-name</name>
+    <value>Microsoft Entra ID</value>
+  </property>
+
+  <!-- Auto-create Ranger user on first OIDC login.
+       true  = users are auto-created with ROLE_USER (ssoEnabled path)
+       false = users must be pre-created in Ranger; non-existent users get 403 -->
+  <property>
+    <name>ranger.oidc.auto-create-user</name>
+    <value>true</value>
+  </property>
+
+  <!-- Cookie name for the OIDC session token -->
+  <property>
+    <name>ranger.oidc.cookie-name</name>
+    <value>ranger_oidc_token</value>
+  </property>
+
+  <!-- HTTP header for Bearer token (API auth) -->
+  <property>
+    <name>ranger.oidc.token-header</name>
+    <value>Authorization</value>
+  </property>
+
+  <!-- Browser User-Agent prefixes for auto-redirect detection -->
+  <property>
+    <name>ranger.oidc.browser.useragent</name>
+    <value>Mozilla,Opera,AppleWebKit</value>
+  </property>
+
+  <!-- RP-Initiated Logout (optional, Entra ID v2.0) -->
+  <!--
+  <property>
+    <name>ranger.oidc.end-session-endpoint</name>
+    <value>https://login.microsoftonline.com/<YOUR_TENANT_ID>/oauth2/v2.0/logout</value>
+  </property>
+  -->
+
+</configuration>
