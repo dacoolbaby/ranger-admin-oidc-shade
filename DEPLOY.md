@@ -365,6 +365,59 @@ OIDC 登录成功后，不需要手动调用 `SessionMgr`。Ranger 已有的 `Ra
 - 在线用户列表正常工作（通过 `RangerHttpSessionListener` 追踪）
 - Session 超时由 Ranger 的 `session-timeout` 配置控制
 
+## permitAll 与登录路径白名单
+
+OIDC 相关的三个路径 `/login/oidc/callback`、`/oidc/init` 和 `/login.jsp` 在 **OIDC Servlet 过滤器级别** 就已处理完毕（发送 302 重定向），不会进入 Spring Security filter chain，因此**正常运行时无需额外 `permitAll()` 配置**。
+
+| 路径 | OIDC filter 处理方式 | 是否会到达 Spring Security |
+|------|---------------------|---------------------------|
+| `/oidc/init` | 重定向到 IdP (302) | 否 |
+| `/login/oidc/callback` | 交换 code → 重定向首页 (302) | 否 |
+| `/login.jsp` | 注入 OIDC 按钮 → 放行 | 是，但 `security="none"` |
+
+如果希望**防御性加固**（例如 OIDC 过滤器意外未生效时防止死循环），可在 `security-applicationContext.xml` 中添加：
+
+```xml
+<security:http pattern="/login/oidc/**" security="none" />
+```
+
+> 此修改**非必需**。OIDC 过滤器正常工作时不依赖此配置。
+
+## 用户不存在时的行为（auto-create-user=false）
+
+当 `ranger.oidc.auto-create-user=false` 且 OIDC 用户在 Ranger 数据库中不存在时：
+
+**浏览器用户会看到 403 错误页面：**
+
+```
+┌─────────────────────────────────┐
+│           ✕                     │
+│      Access Denied              │
+│                                 │
+│  Your account "xxx@xxx.com"     │
+│  has been authenticated, but    │
+│  is not registered in Ranger.   │
+│                                 │
+│  [  Back to Login  ]            │
+│  [ Try Another Account ]        │
+└─────────────────────────────────┘
+```
+
+**API 客户端收到 JSON：**
+```json
+HTTP 403 Forbidden
+{
+  "error": "user_not_registered",
+  "message": "OIDC user 'xxx' is not registered in Ranger.",
+  "action": "Please contact your Ranger administrator to add this user."
+}
+```
+
+实现原理：
+- `RangerOidcSecurityConfig` 通过反射调用 `UserMgr.isValidXAUser(loginId)` 检查用户是否存在
+- 检查在 `OidcAuthenticationFilter.authenticateWithToken()` 中进行
+- 用户不存在时**不设置 SecurityContext**，直接返回 403
+
 ## 验证
 
 构建完成后可通过以下命令检查 JAR 内容：

@@ -109,6 +109,10 @@ public class RangerOidcSecurityConfig
             // Set up authority resolver that uses Ranger's UserMgr if available
             authProvider.setAuthorityResolver(createAuthorityResolver());
 
+            // Set up user existence checker that uses Ranger's UserMgr.isValidXAUser()
+            // to deny access when auto-create-user=false and the user doesn't exist
+            filter.setUserExistenceChecker(createUserExistenceChecker());
+
             // Register the OIDC filter before springSecurityFilterChain
             FilterRegistration.Dynamic registration = servletContext.addFilter(
                     "oidcAuthenticationFilter", filter);
@@ -172,6 +176,48 @@ public class RangerOidcSecurityConfig
                 // Default role
                 authorities.add(new SimpleGrantedAuthority(DEFAULT_ROLE));
                 return authorities;
+            }
+        };
+    }
+
+    /**
+     * Creates a user existence checker that uses Ranger's UserMgr.isValidXAUser()
+     * via reflection at runtime. Falls back to querying XXPortalUser directly.
+     */
+    private OidcAuthenticationFilter.UserExistenceChecker createUserExistenceChecker() {
+        return new OidcAuthenticationFilter.UserExistenceChecker() {
+            @Override
+            public boolean userExists(String loginId) {
+                try {
+                    // Try UserMgr.isValidXAUser() first
+                    Object userMgrBean = applicationContext.getBean("userMgr");
+                    java.lang.reflect.Method isValidMethod =
+                            userMgrBean.getClass().getMethod("isValidXAUser", String.class);
+                    Object result = isValidMethod.invoke(userMgrBean, loginId);
+                    if (result instanceof Boolean) {
+                        return (Boolean) result;
+                    }
+                } catch (Exception e) {
+                    LOG.debug("Could not call UserMgr.isValidXAUser(): {}", e.getMessage());
+                }
+
+                // Fallback: try to find the user via XXPortalUser DAO
+                try {
+                    Object daoManagerBean = applicationContext.getBean("daoManager");
+                    java.lang.reflect.Method getXXPortalUserMethod =
+                            daoManagerBean.getClass().getMethod("getXXPortalUser");
+                    Object xxPortalUserDao = getXXPortalUserMethod.invoke(daoManagerBean);
+                    java.lang.reflect.Method findByLoginIdMethod =
+                            xxPortalUserDao.getClass().getMethod("findByLoginId", String.class);
+                    Object user = findByLoginIdMethod.invoke(xxPortalUserDao, loginId);
+                    return user != null;
+                } catch (Exception e) {
+                    LOG.debug("Could not query XXPortalUser: {}", e.getMessage());
+                }
+
+                // If we cannot check, allow the user (let SessionMgr handle it)
+                LOG.warn("Cannot verify user existence for '{}', allowing login", loginId);
+                return true;
             }
         };
     }

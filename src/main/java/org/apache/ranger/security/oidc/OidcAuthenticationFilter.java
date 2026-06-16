@@ -96,11 +96,27 @@ public class OidcAuthenticationFilter implements Filter {
     private final OidcConfiguration config;
     private final OidcTokenValidator tokenValidator;
 
+    /**
+     * Callback to check if an OIDC-authenticated user exists in the Ranger database.
+     * Return true if the user may proceed, false if the user does not exist and should be denied.
+     * Set via {@link #setUserExistenceChecker(UserExistenceChecker)}.
+     */
+    public interface UserExistenceChecker {
+        /** Returns true if the user exists in Ranger. */
+        boolean userExists(String loginId);
+    }
+
+    private UserExistenceChecker userExistenceChecker;
+
     public OidcAuthenticationFilter(OidcConfiguration config,
                                      OidcTokenValidator tokenValidator,
                                      OidcAuthenticationProvider authenticationProvider) {
         this.config = config;
         this.tokenValidator = tokenValidator;
+    }
+
+    public void setUserExistenceChecker(UserExistenceChecker userExistenceChecker) {
+        this.userExistenceChecker = userExistenceChecker;
     }
 
     @Override
@@ -149,9 +165,13 @@ public class OidcAuthenticationFilter implements Filter {
         // Try Bearer token in Authorization header (for API clients)
         String bearerToken = extractBearerToken(httpRequest);
         if (bearerToken != null) {
-            if (authenticateWithToken(httpRequest, httpResponse, bearerToken)) {
+            AuthResult result = authenticateWithToken(httpRequest, httpResponse, bearerToken);
+            if (result == AuthResult.SUCCESS) {
                 filterChain.doFilter(servletRequest, servletResponse);
                 return;
+            }
+            if (result == AuthResult.USER_NOT_FOUND) {
+                return; // error response already written
             }
             // Invalid token for API request
             if (!isWebUserAgent(httpRequest.getHeader("User-Agent"))) {
@@ -165,9 +185,13 @@ public class OidcAuthenticationFilter implements Filter {
         // Try OIDC session cookie (for browser sessions)
         String cookieToken = getTokenFromCookie(httpRequest);
         if (cookieToken != null) {
-            if (authenticateWithToken(httpRequest, httpResponse, cookieToken)) {
+            AuthResult result = authenticateWithToken(httpRequest, httpResponse, cookieToken);
+            if (result == AuthResult.SUCCESS) {
                 filterChain.doFilter(servletRequest, servletResponse);
                 return;
+            }
+            if (result == AuthResult.USER_NOT_FOUND) {
+                return; // error response already written
             }
         }
 
@@ -301,14 +325,37 @@ public class OidcAuthenticationFilter implements Filter {
 
     // --- Authentication Logic ---
 
-    private boolean authenticateWithToken(HttpServletRequest httpRequest,
-                                           HttpServletResponse httpResponse,
-                                           String token) {
+    /**
+     * Result of an authentication attempt.
+     */
+    private enum AuthResult {
+        SUCCESS,
+        INVALID_TOKEN,
+        USER_NOT_FOUND
+    }
+
+    private AuthResult authenticateWithToken(HttpServletRequest httpRequest,
+                                              HttpServletResponse httpResponse,
+                                              String token) {
         try {
             JWTClaimsSet claims = tokenValidator.validateToken(token);
 
             String username = extractUsername(claims);
             List<String> groups = tokenValidator.extractGroups(claims);
+
+            // Check if user exists in Ranger DB. If auto-create is disabled and user
+            // doesn't exist, deny access with a friendly 403 error page.
+            if (userExistenceChecker != null && !config.isAutoCreateUser()) {
+                if (!userExistenceChecker.userExists(username)) {
+                    LOG.warn("OIDC user '{}' authenticated but not registered in Ranger", username);
+                    try {
+                        writeUserNotFoundError(httpRequest, httpResponse, username);
+                    } catch (IOException e) {
+                        LOG.error("Failed to write user-not-found error page", e);
+                    }
+                    return AuthResult.USER_NOT_FOUND;
+                }
+            }
 
             // Build authorities (admin group check + default role)
             List<GrantedAuthority> authorities = resolveAuthorities(username, groups);
@@ -333,18 +380,91 @@ public class OidcAuthenticationFilter implements Filter {
 
             // Signal Ranger's SecurityContextFormationFilter to use AUTH_TYPE_SSO (audit trail).
             // Also set spnegoEnabled to trigger user auto-creation in SessionMgr.getSSOSpnegoAuthCheckForAPI().
-            // Ranger's SessionMgr checks both spnegoEnabled and ssoEnabled request attributes for
-            // auto-provisioning; setting both ensures OIDC users are auto-created on first login.
             httpRequest.setAttribute("ssoEnabled", true);
             httpRequest.setAttribute("spnegoEnabled", true);
 
             LOG.info("OIDC authentication successful: username={}, groups={}", username, groups);
-            return true;
+            return AuthResult.SUCCESS;
 
         } catch (OidcTokenValidator.OidcTokenValidationException e) {
             LOG.warn("OIDC token validation failed: {}", e.getMessage());
-            return false;
+            return AuthResult.INVALID_TOKEN;
         }
+    }
+
+    private void writeUserNotFoundError(HttpServletRequest request,
+                                         HttpServletResponse response,
+                                         String username) throws IOException {
+        if (!isWebUserAgent(request.getHeader("User-Agent"))) {
+            // API client: return JSON error
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write("{\"error\":\"user_not_registered\","
+                    + "\"message\":\"OIDC user '" + escapeJson(username) + "' is not registered in Ranger.\","
+                    + "\"action\":\"Please contact your Ranger administrator to add this user.\"}");
+        } else {
+            // Browser: return friendly HTML page
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setContentType("text/html;charset=UTF-8");
+            response.getWriter().write(buildUserNotFoundPage(request.getContextPath(), username));
+        }
+    }
+
+    private String buildUserNotFoundPage(String contextPath, String username) {
+        return "<!DOCTYPE html>\n"
+                + "<html lang=\"en\">\n"
+                + "<head>\n"
+                + "<meta charset=\"UTF-8\">\n"
+                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+                + "<title>Access Denied - Ranger Admin</title>\n"
+                + "<style>\n"
+                + "  * { margin:0; padding:0; box-sizing:border-box; }\n"
+                + "  body { font-family:Arial,Helvetica,sans-serif; background:#f5f5f5; "
+                +          "display:flex; justify-content:center; align-items:center; "
+                +          "min-height:100vh; color:#333; }\n"
+                + "  .card { background:#fff; border-radius:8px; box-shadow:0 2px 12px rgba(0,0,0,0.1); "
+                +          "max-width:520px; width:90%; padding:40px; text-align:center; }\n"
+                + "  .icon { width:64px; height:64px; background:#d32f2f; border-radius:50%; "
+                +          "display:inline-flex; align-items:center; justify-content:center; "
+                +          "margin-bottom:20px; }\n"
+                + "  .icon span { color:#fff; font-size:32px; font-weight:bold; line-height:1; }\n"
+                + "  h1 { font-size:22px; margin-bottom:12px; color:#d32f2f; }\n"
+                + "  p { font-size:14px; color:#666; margin-bottom:8px; line-height:1.6; }\n"
+                + "  .user { font-family:monospace; background:#fff3e0; padding:2px 8px; "
+                +          "border-radius:3px; color:#e65100; font-size:13px; }\n"
+                + "  .actions { margin-top:24px; }\n"
+                + "  .btn { display:inline-block; padding:10px 24px; border-radius:4px; "
+                +         "text-decoration:none; font-size:14px; margin:4px; }\n"
+                + "  .btn-primary { background:#1976d2; color:#fff; }\n"
+                + "  .btn-primary:hover { background:#1565c0; }\n"
+                + "  .btn-secondary { background:#e0e0e0; color:#333; }\n"
+                + "  .btn-secondary:hover { background:#d0d0d0; }\n"
+                + "</style>\n"
+                + "</head>\n"
+                + "<body>\n"
+                + "<div class=\"card\">\n"
+                + "  <div class=\"icon\"><span>&#10005;</span></div>\n"
+                + "  <h1>Access Denied</h1>\n"
+                + "  <p>Your account <span class=\"user\">" + escapeHtml(username) + "</span> "
+                +      "has been authenticated by the OIDC provider,</p>\n"
+                + "  <p>but it is <strong>not registered</strong> in Apache Ranger.</p>\n"
+                + "  <p style=\"margin-top:16px;\">"
+                +      "Please contact your Ranger administrator to add this user,</p>\n"
+                + "  <p>or use a different account that has been granted access.</p>\n"
+                + "  <div class=\"actions\">\n"
+                + "    <a href=\"" + contextPath + "/login.jsp\" "
+                +        "class=\"btn btn-primary\">Back to Login</a>\n"
+                + "    <a href=\"" + contextPath + "/oidc/init\" "
+                +        "class=\"btn btn-secondary\">Try Another Account</a>\n"
+                + "  </div>\n"
+                + "</div>\n"
+                + "</body>\n"
+                + "</html>";
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private String extractUsername(JWTClaimsSet claims) {
@@ -591,7 +711,11 @@ public class OidcAuthenticationFilter implements Filter {
             response.addCookie(oidcCookie);
 
             // Authenticate
-            if (authenticateWithToken(request, response, tokenResponse.idToken)) {
+            AuthResult authResult = authenticateWithToken(request, response, tokenResponse.idToken);
+            if (authResult == AuthResult.USER_NOT_FOUND) {
+                return; // error response already written
+            }
+            if (authResult == AuthResult.SUCCESS) {
                 // Redirect to original URL or home
                 String redirectUrl = request.getContextPath() + "/";
                 String originalUrl = (String) session.getAttribute("oidc_original_url");

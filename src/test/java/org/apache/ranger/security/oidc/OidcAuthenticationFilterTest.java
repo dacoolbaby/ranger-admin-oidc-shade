@@ -557,6 +557,90 @@ public class OidcAuthenticationFilterTest {
     }
 
     @Test
+    public void testUserNotFoundReturns403ForBrowser() throws Exception {
+        // Disable auto-create-user → user not in DB → 403
+        System.setProperty(OidcConfiguration.OIDC_AUTO_CREATE_USER, "false");
+        config = new OidcConfiguration();
+        filter = new OidcAuthenticationFilter(config, tokenValidator, authProvider);
+
+        // Set up checker that says user doesn't exist
+        filter.setUserExistenceChecker(new OidcAuthenticationFilter.UserExistenceChecker() {
+            @Override
+            public boolean userExists(String loginId) {
+                return false;
+            }
+        });
+
+        setupValidToken("valid-token", "unknownuser");
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/dashboard.jsp");
+        request.addHeader("Authorization", "Bearer valid-token");
+        request.addHeader("User-Agent", "Mozilla/5.0");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, mockChain);
+
+        assertEquals(403, response.getStatus());
+        String content = response.getContentAsString();
+        assertTrue(content.contains("Access Denied"));
+        assertTrue(content.contains("unknownuser"));
+    }
+
+    @Test
+    public void testUserNotFoundReturns403ForApi() throws Exception {
+        System.setProperty(OidcConfiguration.OIDC_AUTO_CREATE_USER, "false");
+        config = new OidcConfiguration();
+        filter = new OidcAuthenticationFilter(config, tokenValidator, authProvider);
+
+        filter.setUserExistenceChecker(new OidcAuthenticationFilter.UserExistenceChecker() {
+            @Override
+            public boolean userExists(String loginId) {
+                return false;
+            }
+        });
+
+        setupValidToken("api-token", "unknown-api-user");
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/service/public/api/test");
+        request.addHeader("Authorization", "Bearer api-token");
+        request.addHeader("User-Agent", "curl/7.0");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, mockChain);
+
+        assertEquals(403, response.getStatus());
+        String content = response.getContentAsString();
+        assertTrue(content.contains("user_not_registered"));
+    }
+
+    @Test
+    public void testUserExistsWithAutoCreateDisabledAllowsLogin() throws Exception {
+        System.setProperty(OidcConfiguration.OIDC_AUTO_CREATE_USER, "false");
+        config = new OidcConfiguration();
+        filter = new OidcAuthenticationFilter(config, tokenValidator, authProvider);
+
+        filter.setUserExistenceChecker(new OidcAuthenticationFilter.UserExistenceChecker() {
+            @Override
+            public boolean userExists(String loginId) {
+                return true; // user exists
+            }
+        });
+
+        setupValidToken("valid-token", "existinguser");
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI("/service/public/api/test");
+        request.addHeader("Authorization", "Bearer valid-token");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, mockChain);
+
+        verify(mockChain).doFilter(request, response); // login proceeds
+    }
+
+    @Test
     public void testUsernameExtractionFromSubjectFallback() throws Exception {
         System.setProperty(OidcConfiguration.OIDC_USERNAME_CLAIM, "nonexistent-claim");
         config = new OidcConfiguration();
