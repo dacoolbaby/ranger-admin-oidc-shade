@@ -113,6 +113,134 @@ spec:
           name: ranger-oidc-jar
 ```
 
+## Filter Chain 注入机制
+
+### 自动注入（无需手动配置）
+
+OIDC 模块通过两个层面自动集成到 Ranger 的请求处理链中：
+
+**1. Spring Bean 注册 — 组件扫描自动发现**
+
+Ranger 的 `applicationContext.xml` 配置了：
+```xml
+<context:component-scan base-package="org.apache.ranger" />
+```
+
+`RangerOidcSecurityConfig` 位于 `org.apache.ranger.security.oidc` 包（`org.apache.ranger` 的子包），因此会被**自动扫描并加载**。无需任何 XML 修改。
+
+```
+文件位置: org/apache/ranger/security/oidc/RangerOidcSecurityConfig.class
+
+自动扫描路径:
+  org.apache.ranger.*
+    └── org.apache.ranger.security.oidc.RangerOidcSecurityConfig   ← 自动发现
+```
+
+Spring 上下文启动时，配置类会创建以下 Bean：
+- `oidcConfiguration` → 加载 `ranger.oidc.*` 属性
+- `oidcTokenValidator` → JWT 验证器
+- `oidcAuthenticationProvider` → 认证提供者
+- `oidcAuthenticationFilter` → OIDC 过滤器实例
+
+**2. Servlet Filter 注册 — 插入到 Security Filter Chain 之前**
+
+`RangerOidcSecurityConfig` 实现了 `ApplicationListener<ContextRefreshedEvent>` 和 `ServletContextAware`：
+
+```
+Spring Context Refreshed
+        │
+        ▼
+onApplicationEvent(ContextRefreshedEvent)
+        │
+        ▼
+if (ranger.oidc.enabled == false) ──→ 跳过，不注册 filter
+        │
+        ▼
+servletContext.addFilter("oidcAuthenticationFilter", filter)
+    .addMappingForUrlPatterns(..., isMatchAfter=false, "/*")
+        │
+        ▼
+  ┌─────────────────────────────────────────────┐
+  │          Servlet Filter Chain               │
+  │                                             │
+  │  ① oidcAuthenticationFilter  ← 动态注入     │
+  │  ② springSecurityFilterChain (Delegating)   │
+  │     └── SecurityContextPersistenceFilter     │
+  │     └── BasicAuthenticationFilter            │
+  │     └── ssoAuthenticationFilter (Knox SSO)  │
+  │     └── krbAuthenticationFilter (Kerberos)  │
+  │     └── CSRFPreventionFilter                │
+  │     └── FORM_LOGIN_FILTER                   │
+  │     └── RangerSecurityContextFormationFilter │
+  │                                             │
+  │  ③ Jersey REST Servlet                      │
+  └─────────────────────────────────────────────┘
+```
+
+关键实现参数：
+- `isMatchAfter=false` → filter 注册在 `springSecurityFilterChain` **之前**
+- 映射 `/*` → 拦截所有请求
+- 支持 `REQUEST`、`FORWARD`、`ASYNC` 三种 DispatcherType
+
+**3. 验证注入是否成功**
+
+启动 Ranger Admin 后查看日志，搜索关键字：
+
+```bash
+# 成功注册
+grep "OIDC authentication filter registered" ranger-admin.log
+# 输出: OIDC authentication filter registered as 'oidcAuthenticationFilter'
+
+# 如果 OIDC 被禁用
+grep "OIDC authentication is disabled" ranger-admin.log
+# 输出: OIDC authentication is disabled. Filter not registered.
+```
+
+### 备选方案：XML 显式导入（防御性配置）
+
+如果组件扫描因某种原因未生效，可在 `applicationContext.xml` 或 `security-applicationContext.xml` 中**手动导入**：
+
+```xml
+<!-- 在 security-applicationContext.xml 的 <beans:beans> 内添加 -->
+<import resource="classpath:META-INF/spring/ranger-oidc-security.xml"/>
+```
+
+这将显式创建所有 OIDC Bean。Filter 的 Servlet 注册仍由 `RangerOidcSecurityConfig` 自动完成。
+
+### 运行时请求流程
+
+```
+浏览器请求 /dashboard.jsp
+        │
+        ▼
+┌─────────────────────────────────────┐
+│ ① oidcAuthenticationFilter          │
+│   - isAlreadyOidcAuthenticated?      │
+│   - extractBearerToken?              │
+│   - getTokenFromCookie?              │
+│   - 无 token + browser → 302 to IdP │
+│   - 有效 token → set SecurityContext │
+│   - 放行到下一个 filter              │
+└─────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────┐
+│ ② springSecurityFilterChain         │
+│   - SecurityContextPersistenceFilter │
+│     → 从 session 加载 SecurityContext│
+│   - ssoAuthenticationFilter          │
+│     → 已认证？→ 跳过                │
+│   - FORM_LOGIN_FILTER                │
+│     → 已认证？→ 跳过                │
+│   - RangerSecurityContextFormation   │
+│     → sessionMgr.processSuccessLogin │
+│     → 创建 UserSession + 审计记录    │
+└─────────────────────────────────────┘
+        │
+        ▼
+    Ranger Admin 页面
+```
+
 ## 配置
 
 在 `ranger-admin-site.xml`（路径：`<RANGER_HOME>/ews/webapp/WEB-INF/classes/conf.dist/ranger-admin-site.xml`）中添加以下属性：
